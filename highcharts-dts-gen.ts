@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { fetchHighchartsApiJson, capitalize, writeTextFile, apiUrl } from "./utils";
+import { fetchHighchartsApiJson, capitalize, writeTextFile, apiUrl, unique, resolveDefPath } from "./utils";
+import { applyPatchToDefs } from "./highcharts-patch";
 
 // Options used by `Highcharts.setOptions()` as opposed to `Highcharts.chart()`
 const setOptionsNames = ["global", "lang"];
@@ -58,7 +59,89 @@ function outputSchemaDefs(schema: Schema): string {
   delete options._meta;
   // TODO: remove `setOptionsNames` and process those separately
   const optionsDef = { children: options } as Def;
+  writeTextFile("defs.before.json", JSON.stringify(optionsDef, null, 2))
+  applyPatchToDefs(optionsDef);
+  reduceDefTree(optionsDef, [], optionsDef);
+  writeTextFile("defs.after.json", JSON.stringify(optionsDef, null, 2))
   return outputObjectDefAndChildren("Options", optionsDef, [], true);
+}
+
+function reduceDefTree(currentDef: Def, path: string[], rootDef: Def, indent = "") {
+  // console.log(indent, `reduceDefTree [${path}]`.green)
+
+  hasExclude(currentDef) && !hasExtends(currentDef) && console.log(`Object [${path}] doesn't extend but excludes [${currentDef.doclet.exclude}]`.bgYellow)
+
+  // While we're here visiting every node in the tree ensure the fullname is populated
+  // currentDef.meta = { ...currentDef.meta || {}, fullname: path.join(".") }
+
+  if (!isObjectDef(currentDef)) {
+    // console.log(indent, `Resolve non-object def [${path}]`.gray)
+
+    const defsAtPath = resolveDefsAtPath(path, rootDef, indent);
+    if (!defsAtPath.length) throw new Error(`No defs at path [${path}]`)
+    // console.log(indent, `Defs at path [${path}]: ${defsAtPath.length}`.cyan);
+
+    const otherDefsToKeep = defsAtPath.filter(d => d != currentDef && hasTypeInfo(d));
+    if (otherDefsToKeep.length) {
+      console.log(`Type already exists for [${path}] at [${otherDefsToKeep.map(d => d.meta && d.meta.fullname)}] of {${otherDefsToKeep.map(d => [hasType(d) && d.doclet.type.names, d.doclet.values])}}, removing own def with type {${currentDef.doclet && currentDef.doclet.type && currentDef.doclet.type.names}}`.red)
+      deleteDef(path, rootDef);
+    }
+  }
+  else if (hasChildren(currentDef)) {
+    // console.log(indent, `Inspecting children at [${path}]`.gray)
+    Object.keys(currentDef.children).filter(key => !!key).forEach(key => {
+      reduceDefTree(currentDef.children[key], [...path, key], rootDef, `${indent}  `);
+    });
+    // if (!hasTypeInfo(currentDef)) {
+    if (!hasChildren(currentDef) && !hasExtends(currentDef)) { // TODO: need to deal with objects that only have "exclude" of merged props -- switch to emit interfaces, add explicit "extends"?
+      console.log(`Removed all children of [${path}] and no type information is left, removing def`.bgRed)
+      deleteDef(path, rootDef);
+      if (!resolveDefsAtPath(path, rootDef).length) throw new Error(`No defs left at [${path}]`)
+    }
+  } else {
+    // console.log(indent, `No children at [${path}]`.gray)
+    // hasExtends(currentDef) && console.log(indent, `But extends ${currentDef.doclet.extends}`.bgMagenta)
+    // hasExclude(currentDef) && console.log(indent, `But excludes ${currentDef.doclet.exclude}`.bgMagenta)
+    const defsAtPath = resolveDefsAtPath(path, rootDef, `${indent}  `);
+    if (!defsAtPath.length) throw new Error(`No defs at path [${path}]`)
+    // console.log(indent, `Resolved objects at path [${path}]: ${defsAtPath.length}`.bgCyan);
+  }
+
+  function hasTypeInfo(def: Def): boolean {
+    return hasType(def) || hasValues(def) || isObjectDef(def);
+  }
+
+  function deleteDef(path: string[], rootDef: Def) {
+    const parentDef = resolveDefPath(rootDef, path.slice(0, -1));
+    const key = path[path.length - 1];
+    delete parentDef.children[key];
+  }
+}
+
+function resolveDefsAtPath(path: string[], rootDef: Def, indent = ""): Def[] {
+  // console.log(indent, `resolveDefsAtPath ${path}`.gray)
+  let current = rootDef;
+  let resolved: Def[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const key = path[i];
+    current = current.children && current.children[key];
+    if (current) {
+      if (current.doclet && current.doclet.extends) {
+        parseExtendsObjectPaths(current.doclet.extends).forEach(extendsPath => {
+          // console.log(indent, `[${path.slice(0, i + 1)}] extends [${extendsPath}]`.red)
+          resolved.push(...resolveDefsAtPath([...extendsPath, ...path.slice(i + 1)], rootDef, `${indent}  `));
+        });
+      }
+      if (i == path.length - 1) {
+        // console.log(indent, `Resolved [${path}] to ${current}`)
+        resolved.push(current);
+      }
+    } else {
+      // console.log(indent, `Couldn't resolve [${path}] at "${key}"`.gray);
+      break;
+    }
+  }
+  return resolved;
 }
 
 function outputObjectDefAndChildren(key: string, def: Def, chain: string[], topLevel = false): string {
@@ -84,7 +167,8 @@ function filterDefsToChildObjectDefs(defs: Defs): Defs {
 }
 
 function isObjectDef(def: Def): boolean {
-  return hasChildren(def) || hasExtends(def);
+  // TODO: need to deal with objects that only have "exclude" of merged props
+  return hasChildren(def) || hasExtends(def); //|| hasExclude(def); 
 }
 
 function isObjectAlias(def: Def): boolean {
@@ -103,6 +187,14 @@ function hasExclude(def: Def): boolean {
   return !!(def.doclet && def.doclet.exclude && def.doclet.exclude.length);
 }
 
+function hasType(def: Def): boolean {
+  return !!(def.doclet && def.doclet.type && def.doclet.type.names && def.doclet.type.names.length);
+}
+
+function hasValues(def: Def): boolean {
+  return !!(def.doclet && def.doclet.values);
+}
+
 function outputObjectDef(def: Def, fullNameChain: string[], propChain: string[]): string {
   const extendedNames = hasExtends(def) ? outputDefExtendedObjectNames(def) : [];
   const props = outputDefProps(def, propChain);
@@ -111,12 +203,14 @@ function outputObjectDef(def: Def, fullNameChain: string[], propChain: string[])
   ${props.join("\n  ")}
 }`
   ) : null;
+  const exclude = hasExclude(def) ? `\n/** Exclude: ${def.doclet.exclude} */` : "";
   return (
-    `// ${[...fullNameChain].join(".")}${def.doclet && def.doclet.exclude ? `\n/** Exclude: ${def.doclet.exclude} */` : ""}
+    `// ${[...fullNameChain].join(".")}${exclude}
 type ${outputFullName(...fullNameChain)} = ${extendedNames.concat(body || []).join(" & ")};`
   );
+  // TODO: output interface if there's no extends?
   //   return (
-  // `// ${[...fullNameChain].join(".")}${def.doclet && def.doclet.exclude ? `\n/** Exclude: ${def.doclet.exclude} */` : ""}
+  // `// ${[...fullNameChain].join(".")}${exclude}
   // interface ${outputFullName(...fullNameChain)}${extendedNames.length ? ` extends ${[...extendedNames].join(", ")}` : ""} ${body || "{}"}`
   //   );
 }
@@ -137,11 +231,13 @@ function outputDefProps(def: Def, chain: string[]): string[] {
 function outputDefProp(propName: string, propDef: Def, chain: string[]): string {
   const propType = outputDefPropType(propName, propDef, chain);
   const defaultValue = outputDefDefaultValue(propDef);
-  return `${propName}: ${propType};${defaultValue ? ` // Default: ${defaultValue.replace(/\n|\r/g, "\\n")}` : ""}`
+  const defaultComment = defaultValue ? ` // Default: ${defaultValue.replace(/\n|\r/g, "\\n")}` : "";
+  const excludeComment = hasExclude(propDef) ? ` // Exclude: ${propDef.doclet.exclude}` : ""
+  return `${propName}: ${propType};${defaultComment}${excludeComment}`
 }
 
 function outputDefDefaultValue(def: Def): string | undefined {
-  if (def.meta && def.meta.default) return JSON.stringify(def.meta.default);
+  if (def.meta && def.meta.default != undefined) return JSON.stringify(def.meta.default);
   // if (def.doclet && def.doclet.default && def.doclet.default.value) return JSON.stringify(def.doclet.default.value);
   if (def.doclet && def.doclet.defaultvalue) return `"${def.doclet.defaultvalue}"`;
 }
@@ -149,44 +245,45 @@ function outputDefDefaultValue(def: Def): string | undefined {
 function outputDefPropType(propName: string, propDef: Def, chain: string[]): string {
   // console.log(propName.bgRed, propDef)
   return isObjectDef(propDef)
-    ? outputObjectPropType(propName, propDef, chain)
-    : outputPrimitivePropType(propName, propDef, chain);
+    ? outputObjectType(propName, propDef, chain)
+    : outputPrimitiveType(propName, propDef, chain);
 }
 
-function outputObjectPropType(propName: string, propDef: Def, chain: string[]): string {
+function outputObjectType(propName: string, propDef: Def, chain: string[]): string {
   return outputFullName(...chain, propName);
   // return isObjectAlias(propDef)
   //   ? parseExtendsObjectPaths(propDef.doclet.extends).map(objectPath => outputFullName(...objectPath)).join(" & ")
   //   : outputFullName(...chain, propName);
 }
 
-function outputPrimitivePropType(propName: string, propDef: Def, chain: string[]): string {
+function outputPrimitiveType(propName: string, propDef: Def, chain: string[]): string {
   if (propDef.doclet && propDef.doclet.type && propDef.doclet.type.names) {
+    // console.log(`Type of "${[...chain, propName].join(".").bold}" is {${propDef.doclet.type.names.join("|").bold}}`)
     return outputType(propDef.doclet.type, propDef.doclet.values);
   }
   if (propDef.doclet && propDef.doclet.values) {
-    const values = parseDefValues(propDef.doclet.values);
+    const values = parseLiteralValues(propDef.doclet.values);
     if (values) {
       console.log(`Using literal values ${JSON.stringify(values).bold} as type for "${[...chain, propName].join(".").bold}"`.cyan)
       return values.map(outputLiteralValue).join(" | ");
     }
   }
-  if (propDef.meta && propDef.meta.default) {
+  if (propDef.meta && propDef.meta.default != undefined) {
     console.log(`Inferred type of "${[...chain, propName].join(".").bold}" as {${(typeof propDef.meta.default).bold}} from default value {${JSON.stringify(propDef.meta.default).bold}}`.yellow)
     return typeof propDef.meta.default;
   }
-  console.warn(`Unable to determine type for "${[...chain, propName].join(".").bold}" ${propDef.doclet ? propDef.doclet.values : ""}`.red)
+  console.warn(`Unable to determine type for "${[...chain, propName].join(".").bold}" (no doclet.type, doclet.values, or meta.default)`.red)
   return "any";
 }
 
 function outputType(type: Type, values?: string): string {
-  return replaceLiteralValues(outputTypeNames(type.names), parseDefValues(values)).join(" | ");
+  return replacePrimitiveTypesWithLiteralValues(outputTypeNames(type.names), parseLiteralValues(values)).join(" | ");
 }
 
-function replaceLiteralValues(types: string[], values: any[] = []): string[] {
+function replacePrimitiveTypesWithLiteralValues(types: string[], values: any[] = []): string[] {
   values.forEach(value => {
-    const valueType = typeof value;
-    types = types.filter(type => type != valueType);
+    const primitiveTypeOfLiteral = typeof value;
+    types = types.filter(type => type != primitiveTypeOfLiteral);
   });
   return [...types, ...values.map(outputLiteralValue)];
 }
@@ -212,12 +309,10 @@ function outputTypeNames(typeNames: Type["names"]): string[] {
         throw new Error(`Did not expect "${type}" here, this should be handled as an object type`)
       case "Color":
       case "HTMLElement":
+      case "Mixed": // TODO: figure out what this is
         return type;
       case "CSSObject":
-        return "CSSStyleDeclaration";
-      case "Mixed":
-        // TODO: figure out what this is
-        return "any";
+        return "CSSStyleDeclaration"; // TODO: is this right?
       case "Array.<String>":
       case "Array.<Number>":
       case "Array.<Object>": // TODO: what kind of object?
@@ -227,6 +322,7 @@ function outputTypeNames(typeNames: Type["names"]): string[] {
       case "Array.<(Object|Number)>": // TODO: what kind of object?
       case "Array.<(Object|Array)>": // TODO: what kind of object? what kind of inner array?
       case "Array.<(Object|Array|Number)>": // TODO: what kind of object? what kind of inner array?
+      // case "Array.<Array.<Mixed>>":
         const arrayTypeNames = parseArrayTypeNames(type);
         const arrayType = outputType({ names: arrayTypeNames });
         return arrayTypeNames.length == 1
@@ -234,7 +330,7 @@ function outputTypeNames(typeNames: Type["names"]): string[] {
           : `(${arrayType})[]`
       case "Array.<Array.<Mixed>>":
         // TODO: figure out what type of array these are
-        return `any[][]`;
+        return `Mixed[][]`;
       case "Array":
         // TODO: figure out what type of array these are
         return `any[]`;
@@ -260,9 +356,11 @@ function parseExtendsObjectPaths(extendsValue: string): string[][] {
     ); // ex: ["series", "plotOptions.ad"] -> [["series"], ["plotOptions", "ad"]]
 }
 
-function parseDefValues(values?: string): any[] | undefined {
-  values && console.log(`parseDefValues ${values}`.gray)
+function parseLiteralValues(values?: string): any[] | undefined {
+  // values && console.log(`parseDefValues ${values}`.gray)
   try {
-    return values && JSON.parse(values);
-  } catch (error) { }
+    return values && JSON.parse(values.replace(/'/g, `"`).replace(/undefined/g, "null"));
+  } catch (error) {
+    console.error(`Unable to parse values "${values}"`.bgRed)
+  }
 }

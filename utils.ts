@@ -20,3 +20,13 @@ export const unique = <T>(e: T, i: number, a: T[]) => a.indexOf(e) == i;
 export function writeTextFile(file: string, text: string) {
   fs.writeFileSync(file, text);
 }
+
+export function resolveDefPath(rootDef: Def, path: string[]): Def {
+  let current = rootDef;
+  for (let i = 0; i < path.length; i++) {
+    const key = path[i];
+    current = current.children && current.children[key];
+    if (!current) throw new Error(`Unable to resolve object path [${path}] at "${key}"`);
+  }
+  return current;
+}
