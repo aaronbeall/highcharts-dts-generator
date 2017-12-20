@@ -1,6 +1,6 @@
 // Type definitions for Highcharts 6.0.4 (HEAD commit eecc41a on Fri Dec 15 2017 13:52:03 GMT+0100 (W. Europe Standard Time))
 // Project: http://www.highcharts.com/
-// Definitions generated from https://api.highcharts.com/highcharts/tree.json on Tue Dec 19 2017 22:03:55 GMT-0500 (EST)
+// Definitions generated from https://api.highcharts.com/highcharts/tree.json on Tue Dec 19 2017 23:26:10 GMT-0500 (EST)
 // Definitions: https://github.com/DefinitelyTyped/DefinitelyTyped
 // TypeScript Version: 2.6
 
@@ -715,7 +715,7 @@ declare namespace Highcharts {
     tileShape: "hexagon" | "circle" | "diamond" | "square"; // Default: "hexagon"
   };
   // plotOptions.treemap.dataLabels
-  type PlotOptionsTreemapDataLabels = PlotOptionsHeatmapDataLabels;
+  type PlotOptionsTreemapDataLabels = PlotOptionsSeriesDataLabels;
   // plotOptions.treemap.drillUpButton.position
   type PlotOptionsTreemapDrillUpButtonPosition = {
     align: "left" | "center" | "right"; // Default: "right"
@@ -728,16 +728,16 @@ declare namespace Highcharts {
     position: PlotOptionsTreemapDrillUpButtonPosition;
   };
   // plotOptions.treemap.states.hover.halo
-  type PlotOptionsTreemapStatesHoverHalo = PlotOptionsHeatmapStatesHoverHalo;
+  type PlotOptionsTreemapStatesHoverHalo = PlotOptionsSeriesStatesHoverHalo;
   // plotOptions.treemap.states.hover
   /** Exclude: halo */
-  type PlotOptionsTreemapStatesHover = PlotOptionsHeatmapStatesHover & {
+  type PlotOptionsTreemapStatesHover = PlotOptionsSeriesStatesHover & {
     halo: PlotOptionsTreemapStatesHoverHalo; // Default: false
     opacity: number; // Default: 0.75
     shadow: boolean; // Default: false
   };
   // plotOptions.treemap.states
-  type PlotOptionsTreemapStates = PlotOptionsHeatmapStates & {
+  type PlotOptionsTreemapStates = PlotOptionsSeriesStates & {
     hover: PlotOptionsTreemapStatesHover; // Exclude: halo
   };
   // plotOptions.treemap.levels.colorVariation
@@ -865,7 +865,7 @@ declare namespace Highcharts {
     hover: PlotOptionsCandlestickStatesHover;
   };
   // plotOptions.candlestick.tooltip
-  type PlotOptionsCandlestickTooltip = PlotOptionsOhlcTooltip;
+  type PlotOptionsCandlestickTooltip = PlotOptionsColumnTooltip;
   // plotOptions.candlestick
   /** Exclude: borderColor,borderRadius,borderWidth */
   type PlotOptionsCandlestick = PlotOptionsOhlc & {
@@ -1351,7 +1351,7 @@ declare namespace Highcharts {
     data: SeriesBellcurveData;
   };
   // series.bullet.data.targetOptions
-  type SeriesBulletDataTargetOptions = SeriesBulletTargetOptions;
+  type SeriesBulletDataTargetOptions = PlotOptionsBulletTargetOptions;
   // series.bullet.data
   type SeriesBulletData = SeriesColumnData & {
     target: number;

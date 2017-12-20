@@ -62,17 +62,23 @@ function outputSchemaDefs(schema: Schema): string {
   writeTextFile("defs.before.json", JSON.stringify(optionsDef, null, 2))
   applyPatchToDefs(optionsDef);
   reduceDefTree(optionsDef, [], optionsDef);
+  reduceExtendsPaths(optionsDef, optionsDef);
   writeTextFile("defs.after.json", JSON.stringify(optionsDef, null, 2))
   return outputObjectDefAndChildren("Options", optionsDef, [], true);
 }
 
+/**
+ * Reduce redundant defs in the tree by eliminating property defs that are already
+ * being merged with other property defs with good type info. This eliminates 100
+ * objects and hundreds of properties that would otherwise muddy the type-defs.
+ * (Such defs seem to exist in the tree just to add documentation, not type info.)
+ * 
+ * See `defs.before.json` and `defs.after.json` for how the def tree is changed.
+ */
 function reduceDefTree(currentDef: Def, path: string[], rootDef: Def, indent = "") {
   // console.log(indent, `reduceDefTree [${path}]`.green)
 
   hasExclude(currentDef) && !hasExtends(currentDef) && console.log(`Object [${path}] doesn't extend but excludes [${currentDef.doclet.exclude}]`.bgYellow)
-
-  // While we're here visiting every node in the tree ensure the fullname is populated
-  // currentDef.meta = { ...currentDef.meta || {}, fullname: path.join(".") }
 
   if (!isObjectDef(currentDef)) {
     // console.log(indent, `Resolve non-object def [${path}]`.gray)
@@ -118,6 +124,36 @@ function reduceDefTree(currentDef: Def, path: string[], rootDef: Def, indent = "
   }
 }
 
+/**
+ * Sometimes an "extends" field refers to a path that doesn't have a direct def, the def
+ * only exists as a merged def from an inherited parent. This reduces such "extends" to
+ * refer to the nearest concrete def path which will be emitted as a type def, so that emit
+ * later on can trust that the extends path actually exists as a type def.
+ */
+function reduceExtendsPaths(currentDef: Def, rootDef: Def) {
+  if (isObjectDef(currentDef)) {
+    Object.keys(currentDef.children).forEach(key => reduceExtendsPaths(currentDef.children[key], rootDef));
+  }
+  if (hasExtends(currentDef)) {
+    const extendsPaths = parseExtendsObjectPaths(currentDef.doclet.extends);
+    currentDef.doclet.extends = extendsPaths.map(extendsPath => {
+      const defs = resolveDefsAtPath(extendsPath, rootDef);
+      if (!defs.length) throw new Error(`Object [${currentDef.meta.fullname}] extends [${extendsPath}] but no def resolves to that path`)
+      const resolvedPath = defs[defs.length - 1].meta.fullname;
+      resolvedPath != extendsPath.join(".") && console.log(`Resolved extends path [${extendsPath}] to [${resolvedPath}] from [${defs.map(d => d.meta.fullname)}]`.magenta)
+      return resolvedPath;
+    }).join(",");
+  }
+}
+
+/**
+ * Given any path like ["plotOptions", "line", "states", "hover"] this will resolve all
+ * the defs that merge at that path, which may include a direct def at that path, defs
+ * that are extended at that path, defs that are matching named children of defs extended 
+ * in a parent of the path, and so on recursively through the extension hierarchy. 
+ * 
+ * This also adds the appropriate `meta.fullname` path to all visited defs, since it's sometimes missing.
+ */
 function resolveDefsAtPath(path: string[], rootDef: Def, indent = ""): Def[] {
   // console.log(indent, `resolveDefsAtPath ${path}`.gray)
   let current = rootDef;
@@ -126,6 +162,7 @@ function resolveDefsAtPath(path: string[], rootDef: Def, indent = ""): Def[] {
     const key = path[i];
     current = current.children && current.children[key];
     if (current) {
+      current.meta = { ...current.meta || {}, fullname: path.slice(0, i + 1).join(".") } // While we're here ensure the fullname is populated which is used to know what the path is from a def object
       if (current.doclet && current.doclet.extends) {
         parseExtendsObjectPaths(current.doclet.extends).forEach(extendsPath => {
           // console.log(indent, `[${path.slice(0, i + 1)}] extends [${extendsPath}]`.red)
@@ -157,8 +194,8 @@ function outputChildObjectDefs(defs: Defs, chain: string[]): string[] {
   return Object.keys(childObjectDefs).map(key => outputObjectDefAndChildren(key, childObjectDefs[key], chain));
 }
 
-function outputFullName(...chain: string[]): string {
-  return chain.map(capitalize).join("");
+function outputFullName(...path: string[]): string {
+  return path.map(capitalize).join("");
 }
 
 function filterDefsToChildObjectDefs(defs: Defs): Defs {
